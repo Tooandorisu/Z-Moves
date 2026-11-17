@@ -1,0 +1,15 @@
+{
+  "id": "z_moves",
+  "name": "Z-Moves",
+  "version": "0.6.1",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "overhaul",
+  "category": "MECHANIC",
+  "games": ["gen1"],
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Sun/Moon Z-Moves for Red, Blue and Yellow: give a Pokemon a Z-Crystal, press START in the move list, and unleash one full-force Z-Move per battle. Standalone - no engine changes."
+}
