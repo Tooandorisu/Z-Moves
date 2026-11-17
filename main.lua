@@ -16,7 +16,10 @@
 --      bonus (a stat boost, a stat reset or a full heal) first.
 --   4. battle.damage gives the Z-Move the power the Sun/Moon table assigns
 --      to the base move, battle.accuracy makes it bypass the accuracy roll.
---   5. One Z-Move per battle.
+--   5. One Z-Move per battle and side, spent only when it actually fires
+--      (sleep, paralysis or a flinch leave it for later, as in Sun/Moon).
+--      The spent mark is a data-only side token, so a battle checkpoint
+--      keeps it.
 
 return function(mod)
   local FIELD = "zCrystal"       -- field on the saved Pokemon
@@ -44,6 +47,60 @@ return function(mod)
 
   local function typeKey(typeId)
     return (tostring(typeId or ""):gsub("_TYPE$", ""))
+  end
+
+  -- ------- battle and field text
+  -- Registered game text, so a translation mod can override every line the
+  -- mod prints.  The mod fills its own slots ({USER}, {STAT}, {TRAINER},
+  -- {MON}), never the engine's ROM-text formatter, so a translation with a
+  -- different slot set shows the slot name instead of stopping the game.
+
+  local TEXT = {
+    _ZMovesUnleashText = "{USER}\nunleashes its\nfull-force Z-Move!",
+    _ZMovesAuraText = "{USER}\nsurrounded itself\nwith its Z-Power!",
+    _ZMovesBoostText = "{USER}\nboosted {STAT}\nwith its Z-Power!",
+    _ZMovesBoostAllText = "{USER}\nboosted its stats\nwith its Z-Power!",
+    _ZMovesResetText = "{USER}\nreset its stats\nwith its Z-Power!",
+    _ZMovesHealText = "{USER}\nrestored its HP\nwith its Z-Power!",
+    _ZMovesWarningText = "{TRAINER} wears\na Z-RING!",
+  }
+  pcall(function()
+    for id, text in pairs(TEXT) do mod.content.text:register(id, text) end
+  end)
+
+  local function line(data, id, slots)
+    local text = data and data.text and data.text[id]
+    if type(text) ~= "string" then text = TEXT[id] or id end
+    return (text:gsub("{(%u+)}", function(slot)
+      local value = slots and slots[slot]
+      if value ~= nil then return tostring(value) end
+    end))
+  end
+
+  -- "Enemy STARMIE" / "PIKACHU", the way the battle names each side
+  local function actorName(battle, battler)
+    local name = tostring(battler and battler.name or "")
+    if battler and battler == battle.enemy then
+      local ok, prefix = pcall(function() return battle:romLine("EnemyText") end)
+      if ok and type(prefix) == "string" then return prefix .. name end
+    end
+    return name
+  end
+
+  -- a line the battle box shows just before "X used Y!", which the engine
+  -- has already queued with its animation when battle.move_used fires
+  local function sayBeforeUse(battle, text)
+    local queue, row = battle.queue, battle.moveAnimRow
+    local at
+    for i = 1, #(queue or {}) do
+      if queue[i] == row then at = i - 1 break end
+    end
+    if not at or at < 1 then
+      battle:sayNextAuto(text, 40)
+      return
+    end
+    table.insert(queue, at, { text = text, auto = true, autoDelay = 40 })
+    battle.nextInsert = (battle.nextInsert or 0) + 1
   end
 
   -- ------- Z-Move power (Sun/Moon table, read off the base move)
@@ -109,15 +166,6 @@ return function(mod)
     return Z_STATUS[def.id]
   end
 
-  -- what the preview box prints, and what the battle says
-  local function statusLabel(effect)
-    if effect == "reset" then return "RESET STATS", "reset its stats" end
-    if effect == "heal" then return "RESTORE ALL HP", "restored its HP" end
-    if effect == "all" then return "ALL STATS +1", "boosted its stats" end
-    local stat = effect[1]:upper()
-    return stat .. " +" .. effect[2], "boosted " .. stat
-  end
-
   local function applyStatus(battle, effect)
     local player = battle.player
     player.stages = player.stages or {}
@@ -125,24 +173,28 @@ return function(mod)
     local function raise(stat, by)
       stages[stat] = math.min(6, (stages[stat] or 0) + by)
     end
+    local id, stat = "_ZMovesBoostText", nil
     if effect == "reset" then
-      for _, stat in ipairs(STATS) do
-        if (stages[stat] or 0) < 0 then stages[stat] = 0 end
+      for _, s in ipairs(STATS) do
+        if (stages[s] or 0) < 0 then stages[s] = 0 end
       end
+      id = "_ZMovesResetText"
     elseif effect == "heal" then
       local mon = player.mon
       if mon and mon.stats and mon.stats.hp then mon.hp = mon.stats.hp end
+      id = "_ZMovesHealText"
     elseif effect == "all" then
       for i = 1, 4 do raise(STATS[i], 1) end
+      id = "_ZMovesBoostAllText"
     else
       raise(effect[1], effect[2])
+      stat = effect[1]:upper()
     end
-    local _, said = statusLabel(effect)
     pcall(function()
-      battle:sayNext(tostring(player.name) .. "\n" .. said
-        .. "\nwith its Z-Power!")
-      -- the HP bar only moves when a drain row runs
-      if effect == "heal" then battle:drainNext() end
+      battle:sayNext(line(battle.data, id,
+        { USER = actorName(battle, player), STAT = stat }))
+      -- the bar slides up the way RECOVER's does (MoveEffects HEAL_EFFECT)
+      if effect == "heal" then battle:drainNext(player, player.mon.hp) end
     end)
   end
 
@@ -324,11 +376,22 @@ return function(mod)
   -- Read straight from the save's event flags, so a save already past a
   -- milestone has its crystal at once.
 
+  -- The mod manager shows label and value only; `description` is there for
+  -- managers that show more, and the README explains each one.
   mod.options:define({
     { key = "crystals", label = "Z-CRYSTALS", type = "choice", default = "story",
-      choices = { { "STORY", "story" }, { "ALL", "all" } } },
-    { key = "trainers", label = "TRAINER Z-MOVES", type = "toggle", default = true },
-    { key = "animations", label = "Z-MOVE ANIMATIONS", type = "toggle", default = true },
+      choices = { { "STORY", "story" }, { "ALL", "all" } },
+      description = "STORY: earn the Z-RING and each crystal as you play. "
+        .. "ALL: every crystal from the start." },
+    { key = "trainers", label = "TRAINER Z-MOVES", type = "toggle", default = true,
+      description = "Gym Leaders, Giovanni, the Elite Four, the Champion and "
+        .. "the rival from Silph Co. on use one Z-Move per battle." },
+    { key = "warnings", label = "Z-RING WARNING", type = "toggle", default = true,
+      description = "Says when a trainer with a Z-RING starts a battle. "
+        .. "Never says which POKeMON or move." },
+    { key = "animations", label = "Z-MOVE ANIMATIONS", type = "toggle", default = true,
+      description = "ON: every Z-Move plays its own full animation. "
+        .. "OFF: one vanilla animation of its type." },
   })
 
   local RING = "EVENT_GOT_POKEDEX"
@@ -384,10 +447,35 @@ return function(mod)
 
   -- per-battle state
 
-  -- keyed by the live battle, so a battle rebuilt by a checkpoint restore
-  -- simply starts clean instead of reading another battle's state
+  -- Runtime state is keyed by the live battle.  What must outlive it -- the
+  -- "Z-Power spent" mark of each side -- is a data-only token on the
+  -- battle's side table, which battle checkpoints capture and restore, so a
+  -- restored checkpoint cannot hand out a second Z-Move.
   local battles = setmetatable({}, { __mode = "k" })
   local tick = 0
+  local USED_TOKEN = "z_moves.used"
+
+  local function sideTokens(battle, index)
+    local side = type(battle.sides) == "table" and battle.sides[index]
+    if type(side) ~= "table" then return nil end
+    side.tokens = side.tokens or {}
+    return side.tokens
+  end
+
+  local function tokenSet(battle, index)
+    for _, token in ipairs(sideTokens(battle, index) or {}) do
+      if type(token) == "table" and token.id == USED_TOKEN then return true end
+    end
+    return false
+  end
+
+  local function markSpent(battle, st, index)
+    if index == 1 then st.used = true else st.foeUsed = true end
+    local tokens = sideTokens(battle, index)
+    if tokens and not tokenSet(battle, index) then
+      tokens[#tokens + 1] = { id = USED_TOKEN }
+    end
+  end
 
   local function stateFor(battle)
     if type(battle) ~= "table" or not battle.isBattleState then return nil end
@@ -396,11 +484,32 @@ return function(mod)
     local st = battles[battle]
     if not st then
       -- pending: the player's Z-Move this turn; foe/foeUsed: the trainer's
-      st = { used = false, armed = false, pending = nil, notice = nil,
-             foe = nil, foeUsed = false, foePlan = nil }
+      st = { used = tokenSet(battle, 1), armed = false, pending = nil,
+             notice = nil, foe = nil, foeUsed = tokenSet(battle, 2),
+             foePlan = nil }
       battles[battle] = st
     end
     return st
+  end
+
+  -- ------- the record (Z-RING > RECORD), kept with the save
+
+  local function record()
+    local r = mod.save:get("record")
+    if type(r) ~= "table" then r = {} end
+    r.used = tonumber(r.used) or 0
+    r.faced = tonumber(r.faced) or 0
+    r.byKey = type(r.byKey) == "table" and r.byKey or {}
+    return r
+  end
+
+  local function count(field, key)
+    pcall(function()
+      local r = record()
+      r[field] = r[field] + 1
+      if key then r.byKey[key] = (tonumber(r.byKey[key]) or 0) + 1 end
+      mod.save:set("record", r)
+    end)
   end
 
   -- point the borrowed move slot back at its real move
@@ -505,11 +614,28 @@ return function(mod)
     OPP_BRUNO = "FIGHTING", OPP_AGATHA = "GHOST", OPP_LANCE = "DRAGON",
     OPP_RIVAL3 = true,
   }
+  -- The rival joins in from Silph Co. on.  His party numbers differ between
+  -- Red/Blue and Yellow, his levels do not: his last Pokemon is 40 at Silph
+  -- Co. and 53 on Route 22, and 25 at most in every earlier fight.
+  local RIVAL_FROM_LEVEL = 35
 
-  local function foeSlots(battle)
+  -- does this trainer battle come with a Z-Ring at all?
+  local function zTrainer(battle)
     if mod.options:get("trainers") == false then return nil end
     if battle.kind ~= "trainer" or battle.link then return nil end
     local own = LEADERS[battle.oppClass]
+    if own then return own end
+    local party = battle.enemyParty
+    local ace = type(party) == "table" and party[#party]
+    if battle.oppClass == "OPP_RIVAL2" and type(ace) == "table"
+        and (tonumber(ace.level) or 0) >= RIVAL_FROM_LEVEL then
+      return true
+    end
+    return nil
+  end
+
+  local function foeSlots(battle)
+    local own = zTrainer(battle)
     local party, enemy = battle.enemyParty, battle.enemy
     if not own or type(party) ~= "table" or not enemy
         or enemy.mon ~= party[#party] then
@@ -559,17 +685,15 @@ return function(mod)
     if not st then return end
     local plan = st.foePlan
     finish(battle, st)
-    -- the trainer's Z-Move, planned when its action was chosen
+    -- the trainer's Z-Move, planned when its action was chosen.  Its line
+    -- is said when the move fires, so a turn the trainer spends on an item
+    -- or a switch announces nothing.
     if plan and ev.enemyAction == plan.inst and not st.foeUsed then
       local z = Z[plan.key]
       st.foe = { inst = plan.inst, baseId = plan.inst.id, zId = z.id,
-                 power = plan.power, def = plan.def, anim = animFor(z),
-                 executed = false }
+                 key = plan.key, power = plan.power, def = plan.def,
+                 anim = animFor(z), executed = false }
       plan.inst.id = z.id
-      pcall(function()
-        battle:sayAuto(battle:romLine("EnemyText") .. tostring(battle.enemy.name)
-          .. "\nunleashes its\nfull-force Z-Move!", 40)
-      end)
     end
     local armed = st.armed
     st.armed = false
@@ -585,27 +709,19 @@ return function(mod)
     end
     if not owned then return end
 
-    -- as in Sun/Moon, Z-Power is spent when the Z-Move is chosen, even if
-    -- sleep or paralysis then stops the Pokemon from moving
-    st.used = true
+    -- spent only when the move fires (battle.move_used): as in Sun/Moon, a
+    -- Pokemon kept from moving by sleep, paralysis, a flinch or confusion
+    -- keeps its Z-Power for a later turn
     if info.status then
       -- a status Z-Move stays the move it is; only its bonus is new
       st.pending = { inst = action, baseId = action.id, status = info.status,
-                     executed = false }
-      pcall(function()
-        battle:sayAuto(tostring(battle.player.name)
-          .. "\nsurrounded itself\nwith its Z-Power!", 40)
-      end)
+                     key = info.z.key, executed = false }
       return
     end
     st.pending = { inst = action, baseId = action.id, zId = info.z.id,
-                   power = info.power, def = info.def, anim = animFor(info.z),
-                   boost = info.boost, executed = false }
+                   key = info.z.key, power = info.power, def = info.def,
+                   anim = animFor(info.z), boost = info.boost, executed = false }
     action.id = info.z.id
-    pcall(function()
-      battle:sayAuto(tostring(battle.player.name)
-        .. "\nunleashes its\nfull-force Z-Move!", 40)
-    end)
   end)
 
   mod.events:on("battle.move_used", function(ev)
@@ -615,10 +731,13 @@ return function(mod)
     if f and not f.executed and not ev.isCalled and ev.user == battle.enemy
         and ev.move and ev.move.id == f.zId then
       f.executed = true
-      st.foeUsed = true  -- spent only once it actually fires
+      markSpent(battle, st, 2)
+      count("faced")
       if f.inst.id == f.zId then f.inst.id = f.baseId end
       local row = battle.moveAnimRow
       if f.anim and type(row) == "table" and row.anim == f.zId then row.anim = f.anim end
+      pcall(sayBeforeUse, battle, line(battle.data, "_ZMovesUnleashText",
+        { USER = actorName(battle, battle.enemy) }))
       return
     end
     local p = st and st.pending
@@ -629,12 +748,20 @@ return function(mod)
     if p.status then
       if ev.move.id == p.baseId then
         p.executed = true
+        markSpent(battle, st, 1)
+        count("used", p.key)
+        pcall(sayBeforeUse, battle, line(battle.data, "_ZMovesAuraText",
+          { USER = actorName(battle, battle.player) }))
         applyStatus(battle, p.status)
       end
       return
     end
     if ev.move.id ~= p.zId then return end
     p.executed = true
+    markSpent(battle, st, 1)
+    count("used", p.key)
+    pcall(sayBeforeUse, battle, line(battle.data, "_ZMovesUnleashText",
+      { USER = actorName(battle, battle.player) }))
     -- PP has already come off the real move slot; the trainer's slot is
     -- left alone, it may not have moved yet
     if p.inst.id == p.zId then p.inst.id = p.baseId end
@@ -648,8 +775,8 @@ return function(mod)
         player.stages[stat] = math.min(6, (player.stages[stat] or 0) + 2)
       end
       pcall(function()
-        battle:sayNext(tostring(player.name)
-          .. "\nboosted its stats\nwith its Z-Power!")
+        battle:sayNext(line(battle.data, "_ZMovesBoostAllText",
+          { USER = actorName(battle, player) }))
       end)
     end
   end)
@@ -689,14 +816,52 @@ return function(mod)
     return next(call)
   end)
 
+  -- optional heads-up when a Z-Ring trainer's battle opens.  It names the
+  -- trainer only, never the Pokemon or the move, so the Z-Move itself stays
+  -- a surprise.  battle.started fires after the whole intro is queued, so
+  -- the line lands just before the first menu.
+  mod.events:on("battle.started", function(ev)
+    local battle = ev and ev.battle
+    local st = stateFor(battle)
+    if not st or st.foeUsed or mod.options:get("warnings") == false then return end
+    if not zTrainer(battle) then return end
+    local name = battle.trainer and battle.trainer.name or "The trainer"
+    pcall(function()
+      battle:sayAuto(line(battle.data, "_ZMovesWarningText", { TRAINER = name }), 40)
+    end)
+  end)
+
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     finish(battle, battle and battles[battle])
   end)
 
+  -- A Pokemon that faints or leaves before its Z-Move fires hands the slot
+  -- back at once: the faint and switch flows can skip the rest of the turn,
+  -- and its move list may be shown (party menu, summary) before the next
+  -- turn_ended would have done it.  The Z-Power was not spent.
+  local function dropPending(battle, st, battler)
+    for key, side in pairs({ pending = battle.player, foe = battle.enemy }) do
+      local p = st[key]
+      if p and not p.executed and (battler == nil or battler == side) then
+        if p.zId and p.inst.id == p.zId then p.inst.id = p.baseId end
+        st[key] = nil
+      end
+    end
+  end
+
   mod.events:on("battle.battler_switched", function(ev)
-    local st = ev and ev.battle and battles[ev.battle]
-    if st then st.armed = false end
+    local battle = ev and ev.battle
+    local st = battle and battles[battle]
+    if not st then return end
+    st.armed = false
+    dropPending(battle, st, nil)
+  end)
+
+  mod.events:on("battle.fainted", function(ev)
+    local battle = ev and ev.battle
+    local st = battle and battles[battle]
+    if st then dropPending(battle, st, ev.battler) end
   end)
 
   mod.events:on("battle.ended", function(ev)
@@ -764,15 +929,27 @@ return function(mod)
     return (SHORT_STAT[effect[1]] or "?") .. "+" .. effect[2]
   end
 
-  -- hold the start, step one letter at a time, hold the end, repeat
+  -- hold the start, step one letter at a time, hold the end, repeat.
+  -- Widths are measured with the font, not counted, so a font or UI mod
+  -- with wider or narrower letters still never runs past the bar.
   local HOLD, STEP = 50, 9
-  local function window(text, width, since)
-    if #text <= width then return text end
-    local over = #text - width
+  local function fits(Font, text, pixels) return Font.width(text) <= pixels end
+
+  local function window(Font, text, pixels, since)
+    if fits(Font, text, pixels) then return text end
+    -- the longest tail that fits decides how far the scroll goes
+    local over = 0
+    while over < #text and not fits(Font, text:sub(over + 1), pixels) do
+      over = over + 1
+    end
     local cycle = HOLD + over * STEP + HOLD
     local t = (tick - since) % cycle
     local shift = t < HOLD and 0 or math.min(over, math.floor((t - HOLD) / STEP) + 1)
-    return text:sub(shift + 1, shift + width)
+    local shown = text:sub(shift + 1)
+    while #shown > 0 and not fits(Font, shown, pixels) do
+      shown = shown:sub(1, -2)
+    end
+    return shown
   end
 
   local function drawBar(Font, ox, left, right, st)
@@ -784,11 +961,34 @@ return function(mod)
     g.rectangle("fill", x, BAR_Y, w, 1)
     g.rectangle("fill", x, BAR_Y + BAR_H - 1, w, 1)
     right = right or ""
-    local room = COLS - 2 - (#right > 0 and #right + 1 or 0)
+    local prefix = "Z:"
+    local rightW = #right > 0 and Font.width(right) or 0
+    local gap = #right > 0 and Font.width(" ") or 0
+    local room = w - Font.width(prefix) - gap - rightW
     -- restart the scroll whenever the text changes (another move highlighted)
     if st.barText ~= left then st.barText, st.barSince = left, tick end
-    Font.draw("Z:" .. window(left, room, st.barSince), x, BAR_Y + 4)
-    if #right > 0 then Font.draw(right, x + w - Font.width(right), BAR_Y + 4) end
+    Font.draw(prefix .. window(Font, left, room, st.barSince), x, BAR_Y + 4)
+    if #right > 0 then Font.draw(right, x + w - rightW, BAR_Y + 4) end
+  end
+
+  -- Widescreen lays the moves out 2x2 with no free panel beside them, and a
+  -- twelve-letter name runs right up to the next column.  The one place
+  -- next to each move that is always free is the box border: the top
+  -- border above the first row, the bottom border below the second.  A
+  -- small Z tab sits there, under the last letters of the name field.
+  local function drawWideMarkers(battle, Font, g)
+    for slot = 1, 4 do
+      if usable(battle, slot) then
+        local col = (slot - 1) % 2
+        local row = math.floor((slot - 1) / 2)
+        local x = (col == 0 and 16 or 120) + 88
+        local y = row == 0 and 104 or 136
+        g.setColor(1, 1, 1, 1)
+        g.rectangle("fill", x - 1, y, 10, 8)
+        g.setColor(0, 0, 0, 1)
+        Font.draw("Z", x, y)
+      end
+    end
   end
 
   local function drawOverlay(battle)
@@ -828,7 +1028,9 @@ return function(mod)
       end
     elseif st.armed then
       drawBar(Font, ox, "POWER READY", nil, st)
-    elseif phase == "moveSelect" and not wide and available(battle, st) then
+    elseif phase == "moveSelect" and wide and available(battle, st) then
+      drawWideMarkers(battle, Font, g)
+    elseif phase == "moveSelect" and available(battle, st) then
       -- a Z in the empty panel left of the move list, on the row of each
       -- move that can become one (a 12-letter name fills the list's own
       -- columns, so a marker inside the list reads as part of the name)
@@ -915,19 +1117,78 @@ return function(mod)
     end
     -- no Z-Ring yet: no row, unless a crystal is held and needs taking back
     if not hasRing(game and game.save) and not mon[FIELD] then return rows end
+    -- the row names what is held (Z:ELECTRIC, Z:PIKANIUM), so the party
+    -- menu shows each Pokemon's crystal without opening anything
+    local held = mon[FIELD] and Z[mon[FIELD]]
+    local label = held and ("Z:" .. (held.species
+      and (held.crystal:gsub(" Z$", "")) or held.key)) or "Z-CRYSTAL"
     mod.ui.insertBefore(rows, "STATS", {
-      label = "Z-CRYSTAL",
+      label = label,
+      -- The submenu box is sized from its widest field move and is only six
+      -- columns wide without one.  SOFTBOILED's width (ten columns) fits
+      -- every label above; the row still runs onSelect, never the move.
+      move = "softboiled",
       onSelect = function(selected, g) openCrystals(selected or mon, g or game) end,
     })
     return rows
   end)
+
+  -- ------- the Z-RING key item
+  -- A real key item, so it sits in the BAG and the PC like any other.  The
+  -- engine quarantines bag items whose content disappears (the mod turned
+  -- off) and hands them back when it returns, so the item cannot damage a
+  -- save.  Owning the ring is still read from the story flags; the item is
+  -- how the player reaches the Z-RING screen.
+
+  local RING_ITEM = "Z_RING"
+  local ringItem = pcall(function()
+    mod.content.items:register(RING_ITEM, {
+      id = RING_ITEM, name = "Z-RING", price = 0,
+      keyItem = true, tossable = false,
+    })
+  end)
+
+  local function holdsRingItem(save)
+    if type(save) ~= "table" then return false end
+    for _, store in ipairs({ save.inventory, save.pcItems }) do
+      if type(store) == "table" and (tonumber(store[RING_ITEM]) or 0) > 0 then
+        return true
+      end
+    end
+    for _, entry in ipairs(type(save.orphaned) == "table"
+        and save.orphaned.items or {}) do
+      if type(entry) == "table" and entry.id == RING_ITEM then return true end
+    end
+    return false
+  end
+
+  -- give_item stops the whole script with "no more room" when the BAG is
+  -- full, so the ring only goes out when there is a free slot.  Counted the
+  -- way Gen 1's single bag counts (src/inventory/Bag.lua): one slot per
+  -- item, one more per 99 beyond the first stack, badges free, capacity
+  -- data.constants.bagSize or 20.  Read from public data only.
+  local function bagHasRoom(game)
+    local save, data = game and game.save, game and game.data
+    if type(save) ~= "table" then return false end
+    local used = 0
+    for id, n in pairs(save.inventory or {}) do
+      n = tonumber(n) or 0
+      if n > 0 and not tostring(id):find("BADGE", 1, true) then
+        used = used + math.max(1, math.ceil(n / 99))
+      end
+    end
+    local cap = data and data.constants and tonumber(data.constants.bagSize)
+    cap = (cap and cap >= 1) and math.floor(cap) or 20
+    return used < cap
+  end
 
   -- ------- "got a crystal" messages
   -- Which crystals have been announced is kept with the save, so a message
   -- missed to a crash or a reset (Lance is followed straight by the
   -- Champion, the Hall of Fame and the credits) still shows later.  It is
   -- shown through the overworld's own script queue, which waits for warps,
-  -- cutscenes and scripted walks to finish before it runs anything.
+  -- cutscenes and scripted walks to finish before it runs anything.  Each
+  -- one plays the key-item fanfare.
 
   local LABEL, ORDER = {}, {}
   for i, row in ipairs(TYPES) do LABEL[row.key], ORDER[row.key] = row.crystal, i end
@@ -935,11 +1196,14 @@ return function(mod)
     LABEL[row.key], ORDER[row.key] = row.crystal, 100 + i
   end
 
+  local FANFARE = "Get_Key_Item"
   local RING_TEXT = "_ZMovesGotZRingText"
+  local RING_BAG_TEXT = "_ZMovesRingToBagText"
   local function gotText(key) return "_ZMovesGot" .. key .. "Text" end
   -- registered text, so a translation mod can override it
   pcall(function()
     mod.content.text:register(RING_TEXT, "{PLAYER} got a\nZ-RING!")
+    mod.content.text:register(RING_BAG_TEXT, "{PLAYER} put the\nZ-RING in the PACK.")
     for key, label in pairs(LABEL) do
       if Z[key] then
         mod.content.text:register(gotText(key), "{PLAYER} got\n" .. label .. "!")
@@ -981,31 +1245,256 @@ return function(mod)
 
   -- world.stepped only fires for steps the player took, never scripted ones
   mod.events:on("world.stepped", function()
-    if not storyMode() then return end
-    local save = mod.game and mod.game.save
+    local game = mod.game
+    local save = game and game.save
     if not save then return end
-    local seen = announced(save)
+    local story = storyMode()
+    local seen = story and announced(save) or {}
     local rows, keys = {}, {}
-    if hasRing(save) and not seen.RING then
-      rows[#rows + 1] = { "show_text", RING_TEXT }
-    end
-    for key in pairs(UNLOCK) do
-      if Z[key] and not seen[key] and unlocked(save, key) then
-        keys[#keys + 1] = key
+    local giveRing = ringItem and hasRing(save) and not holdsRingItem(save)
+      and mod.save:get("ringGiven") ~= true and bagHasRoom(game)
+    if story and hasRing(save) and not seen.RING then
+      -- the first Z-RING: into the BAG with its own fanfare when it fits
+      if giveRing then
+        rows[#rows + 1] = { "give_item", RING_ITEM, 1, RING_TEXT }
+        giveRing = false
+      else
+        rows[#rows + 1] = { "text_sound", FANFARE }
+        rows[#rows + 1] = { "show_text", RING_TEXT }
       end
     end
-    table.sort(keys, function(a, b) return ORDER[a] < ORDER[b] end)
-    for _, key in ipairs(keys) do
-      rows[#rows + 1] = { "show_text", gotText(key) }
+    if giveRing then
+      -- a save that had the ring before the item existed, or a BAG that was
+      -- full when it was earned
+      rows[#rows + 1] = { "give_item", RING_ITEM, 1, RING_BAG_TEXT }
+    end
+    if story then
+      for key in pairs(UNLOCK) do
+        if Z[key] and not seen[key] and unlocked(save, key) then
+          keys[#keys + 1] = key
+        end
+      end
+      table.sort(keys, function(a, b) return ORDER[a] < ORDER[b] end)
+      for _, key in ipairs(keys) do
+        rows[#rows + 1] = { "text_sound", FANFARE }
+        rows[#rows + 1] = { "show_text", gotText(key) }
+      end
     end
     if #rows == 0 then return end
     local ow = overworld()
     if not (ow and ow.queueScript) then return end
     -- marked only once the message is actually on its way
-    if hasRing(save) then seen.RING = true end
-    for _, key in ipairs(keys) do seen[key] = true end
-    mod.save:set("announced", seen)
+    if story then
+      if hasRing(save) then seen.RING = true end
+      for _, key in ipairs(keys) do seen[key] = true end
+      mod.save:set("announced", seen)
+    end
+    for _, row in ipairs(rows) do
+      if row[1] == "give_item" then mod.save:set("ringGiven", true) end
+    end
     ow:queueScript(rows)
+  end)
+
+  -- ------- the Z-RING screen: crystals, party, record
+
+  local function crystalStem(key)
+    local label = LABEL[key] or key
+    return (label:gsub(" Z$", ""))
+  end
+
+  local function zMoveName(key)
+    local z = Z[key]
+    return z and table.concat(z.name, " ") or key
+  end
+
+  -- the type's display name from the merged type chart (a translation or
+  -- a type mod may rename it), else its id without pokered's _TYPE
+  local function typeName(game, key)
+    for _, row in ipairs(TYPES) do
+      if row.key == key then
+        local sample = game.data.moves[row.anim]
+        local types = game.data.type_chart and game.data.type_chart.types
+        local record = sample and type(types) == "table" and types[sample.type]
+        if type(record) == "table" and type(record.name) == "string" then
+          return record.name
+        end
+      end
+    end
+    return key
+  end
+
+  local function describe(game, key)
+    local z = Z[key]
+    if not z then return "" end
+    local zname = z.name[2] and (z.name[1] .. "\n" .. z.name[2]) or z.name[1]
+    if z.species then
+      local mon = game.data.pokemon[z.species]
+      local base = game.data.moves[z.base]
+      return ("Only for %s.\n%s becomes\f%s!"):format(
+        mon and mon.name or z.species, base and base.name or z.base, zname)
+    end
+    return ("Turns %s\nmoves into\f%s!"):format(typeName(game, key), zname)
+  end
+
+  local function showText(game, text, onDone)
+    game.stack:push(mod.ui.TextBox.new(game, text, onDone))
+  end
+
+  local function openCollection(game)
+    local save = game.save
+    local items = {}
+    local held = {}
+    for _, mon in ipairs(save.party or {}) do
+      if mon[FIELD] then held[mon[FIELD]] = true end
+    end
+    local function add(key)
+      if not Z[key] then return end
+      if unlocked(save, key) then
+        items[#items + 1] = { label = LABEL[key], key = key,
+                              right = held[key] and "HELD" or nil }
+      else
+        items[#items + 1] = { label = "-----------", locked = true }
+      end
+    end
+    for _, row in ipairs(TYPES) do add(row.key) end
+    for _, row in ipairs(EXCLUSIVE) do add(row.key) end
+    game.stack:push(mod.ui.ListMenu.new(game, "Z-CRYSTALS", items, {
+      onChoose = function(item)
+        if item.locked then
+          showText(game, "Not found yet.")
+        else
+          showText(game, describe(game, item.key))
+        end
+      end,
+    }))
+  end
+
+  local function monLabel(game, mon)
+    local def = game.data.pokemon and game.data.pokemon[mon.species]
+    return mon.nickname or (def and def.name) or tostring(mon.species)
+  end
+
+  local function openParty(game)
+    local items = {}
+    for _, mon in ipairs(game.save.party or {}) do
+      local key = mon[FIELD]
+      items[#items + 1] = { label = monLabel(game, mon), key = key,
+        right = key and Z[key] and crystalStem(key) or "-----" }
+    end
+    if #items == 0 then return showText(game, "No POKéMON.") end
+    game.stack:push(mod.ui.ListMenu.new(game, "PARTY", items, {
+      onChoose = function(item)
+        if item.key and Z[item.key] then
+          showText(game, ("%s holds\n%s."):format(item.label, LABEL[item.key]))
+        else
+          showText(game, item.label .. "\nholds no crystal.")
+        end
+      end,
+    }))
+  end
+
+  local function openRecord(game)
+    local r = record()
+    local best, bestN
+    for key, n in pairs(r.byKey) do
+      n = tonumber(n) or 0
+      if Z[key] and (not bestN or n > bestN
+          or (n == bestN and (ORDER[key] or 0) < (ORDER[best] or 0))) then
+        best, bestN = key, n
+      end
+    end
+    local text = ("Your Z-Moves: %d\nFoes' Z-Moves: %d"):format(r.used, r.faced)
+    if best then
+      -- one line when the name fits the 18-column box, else its two words
+      -- on two pages
+      local z = Z[best]
+      local joined = table.concat(z.name, " ")
+      text = text .. ("\fMost used (x%d):\n"):format(bestN)
+        .. (#joined <= 18 and joined or (z.name[1] .. "\f" .. z.name[2]))
+    end
+    showText(game, text)
+  end
+
+  local function openRing(game)
+    local items = {
+      { label = "CRYSTALS", open = openCollection },
+      { label = "PARTY", open = openParty },
+      { label = "RECORD", open = openRecord },
+    }
+    game.stack:push(mod.ui.ListMenu.new(game, "Z-RING", items, {
+      onChoose = function(item) item.open(game) end,
+    }))
+  end
+
+  -- USE from the BAG opens the screen; the ring is never spent.  In battle
+  -- the bag answers with its own "not the time" before this runs.
+  mod.hooks:wrap("item.use", function(next, game, battle, id, ...)
+    if id ~= RING_ITEM then return next(game, battle, id, ...) end
+    if battle then return next(game, battle, id, ...) end
+    pcall(openRing, game)
+  end)
+
+  -- ------- Gen1 Modern UI
+  -- When Modern UI is installed its party and summary screens replace the
+  -- vanilla ones.  Its documented additive extensions let Z-Moves add a Z
+  -- badge to crystal holders on the party list and a Z-CRYSTAL page to the
+  -- summary, as data only: Modern UI draws them, Z-Moves draws nothing on
+  -- its screens.  Without Modern UI none of this runs.
+
+  local function summaryRows(game, mon)
+    local key = type(mon) == "table" and mon[FIELD]
+    local z = key and Z[key]
+    if not z then
+      return { { label = "CRYSTAL", value = "NONE" } }
+    end
+    local rows = {
+      { label = "CRYSTAL", value = z.crystal },
+      { label = "Z-MOVE", value = table.concat(z.name, " ") },
+    }
+    if z.species then
+      local base = game and game.data.moves[z.base]
+      rows[#rows + 1] = { label = "FROM", value = base and base.name or z.base }
+    end
+    return rows
+  end
+
+  mod.exports.gen1ModernUi = {
+    apiVersion = 1,
+    extensions = {
+      zMovesCrystals = {
+        match = function(state, kind)
+          return kind == "party" or kind == "summary"
+        end,
+        model = function(game, state, kind)
+          if kind == "party" then
+            local rows = {}
+            local party = type(state) == "table" and state.party
+              or (game and game.save and game.save.party) or {}
+            for index, mon in ipairs(party) do
+              if type(mon) == "table" and Z[mon[FIELD] or ""] then
+                rows[index] = { badge = { text = "Z", color = "accent" } }
+              end
+            end
+            return { rows = rows }
+          end
+          local mon = type(state) == "table"
+            and (state.mon or state.pokemon) or nil
+          return { pages = { { id = "z-crystal", title = "Z-CRYSTAL",
+                               rows = summaryRows(game, mon) } } }
+        end,
+        priority = 20,
+      },
+    },
+  }
+
+  mod.events:on("mods.loaded", function()
+    pcall(function()
+      local ui = mod.find and mod.find("gen1_modern_ui") or nil
+      if ui and ui.exports and ui.exports.registerAdapter then
+        ui.exports.registerAdapter({ owner = mod.id,
+                                     contract = mod.exports.gen1ModernUi })
+      end
+    end)
   end)
 
   -- ------- for other mods (a custom battle UI can draw its own Z button)
@@ -1019,8 +1508,22 @@ return function(mod)
     return z and z.crystal or nil
   end
   mod.exports.state = function(battle)
-    local st = battle and battles[battle]
+    local st = battle and stateFor(battle)
     return { armed = st and st.armed or false, used = st and st.used or false,
              foeUsed = st and st.foeUsed or false }
   end
+  -- the Z-Move a move slot would become right now, for a custom battle UI:
+  -- { name, power } or { name, effect } for a status move, or nil
+  mod.exports.preview = function(battle, slot)
+    local st = battle and stateFor(battle)
+    if not st or st.used then return nil end
+    local info = usable(battle, slot)
+    if not info then return nil end
+    if info.status then
+      return { name = info.def and info.def.name, effect = shortEffect(info.status) }
+    end
+    return { name = table.concat(info.z.name, " "), power = info.power,
+             effect = info.boost and "ALL+2" or nil }
+  end
+  mod.exports.record = function() return record() end
 end
