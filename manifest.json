@@ -1,15 +1,20 @@
 {
   "id": "z_moves",
   "name": "Z-Moves",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "api": 2,
   "entry": "main.lua",
   "profile": "overhaul",
   "category": "MECHANIC",
-  "games": ["gen1"],
+  "games": [
+    "gen1"
+  ],
   "priority": 100,
   "dependencies": [],
-  "optional_dependencies": [],
+  "optional_dependencies": [
+    "gen1_modern_ui"
+  ],
   "conflicts": [],
-  "description": "Sun/Moon Z-Moves for Red, Blue and Yellow: give a Pokemon a Z-Crystal, press START in the move list, and unleash one full-force Z-Move per battle. Standalone - no engine changes."
+  "description": "Sun/Moon Z-Moves for Red, Blue and Yellow: earn Z-Crystals, carry the Z-RING, and unleash one full-force Z-Move per battle - so do Gym Leaders, the Elite Four and your rival. Standalone - no engine changes.",
+  "github": "Tooandorisu/Z-Moves"
 }
