@@ -1,5 +1,5 @@
 return {
-  summary = "Sun/Moon Z-Moves for Red, Blue and Yellow, with no engine changes.",
+  summary = "Sun/Moon Z-Moves for Red, Blue, Yellow, Gold, Silver and Crystal, with no engine changes.",
   author = "Tooandorisu",
   tags = { "battle", "mechanic", "z-moves" },
   differences = {
@@ -7,10 +7,10 @@ return {
       "a damaging move chosen with Z-Power armed becomes its type's Z-Move for that turn",
     },
     added = {
-      "15 Z-Move records (ZMOVE_<TYPE>)",
+      "a Z-Move record per type (ZMOVE_<TYPE>): 15 in Gen 1, 17 in Gen 2",
       "4 species-exclusive Z-Moves with their own crystals",
       "crystals earned from gym leaders and story milestones (or all at once)",
-      "Gym Leaders, Giovanni, Elite Four, Champion and the rival (from Silph Co.) use one Z-Move per battle",
+      "Gym Leaders, Elite Four, Champion and the rival use one Z-Move per battle (Gen 1: Giovanni; Gen 2: Kanto leaders and RED)",
       "Z-RING key item: crystal collection, party crystals and a Z-Move record",
       "key-item fanfare for every crystal; optional Z-RING warning at battle start",
       "own Z-Move animations built from the game's animation pieces",
@@ -21,13 +21,13 @@ return {
     },
     known = {
       "Catastropika, Pulverizing Pancake and Extreme Evoboost use stand-in base moves",
-      "Gen 1 games only",
+      "Gen 1 and Gen 2 games (no Gen 3 yet)",
       "turning the mod off sets the Z-RING item aside in the engine's quarantine until it returns",
     },
   },
   credits = {
     { who = "bryanthaboi", for_ = "Gen1Recomp and its mod API" },
-    { who = "pret/pokered", for_ = "the battle engine the hooks sit on" },
+    { who = "pret/pokered, pokegold, pokecrystal", for_ = "the battle engines the hooks sit on" },
   },
   compat = { modApi = 2 },
 }
