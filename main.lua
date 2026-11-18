@@ -20,8 +20,17 @@
 --      (sleep, paralysis or a flinch leave it for later, as in Sun/Moon).
 --      The spent mark is a data-only side token, so a battle checkpoint
 --      keeps it.
+--
+-- Gold, Silver and Crystal run gen2.lua instead (same rules, Gen 2's battle
+-- and screens); everything below this dispatch is the Red/Blue/Yellow half.
 
 return function(mod)
+  if mod.generation == 2 then
+    local source = assert(mod:read("gen2.lua"), "z_moves: gen2.lua is missing")
+    local chunk = assert(load(source, "@gen2.lua"))
+    return chunk()(mod)
+  end
+
   local FIELD = "zCrystal"       -- field on the saved Pokemon
   local PREFIX = "ZMOVE_"        -- registered move ids: ZMOVE_<TYPE>
 

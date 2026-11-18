@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.8.0]
+
+Gold, Silver and Crystal. The same mod now runs on both generations; Red,
+Blue and Yellow behave exactly as in 0.7.0.
+
+### Added
+- **Gen 2 support** (`"games": ["gen1", "gen2"]`): Gold, Silver and Crystal,
+  with existing saves.
+- **Darkinium Z** (Black Hole Eclipse) and **Steelium Z** (Corkscrew Crash):
+  all 17 Gen 2 types have a Z-Move.
+- **Gen 2 story crystals:** the Z-Ring from PROF.ELM, Normalium Z from
+  Whitney, Eevium Z with Bill's Eevee, and the rest from Johto's gyms and
+  story (Sudowoodo, Ilex Forest, the Kimono Girls, the Burned Tower, Amphy,
+  the red Gyarados, the Rocket hideout, the Radio Tower, the Ruins of Alph),
+  Pikanium and Snorlium Z in Kanto, Mewnium Z for beating RED. Each crystal
+  is awarded once.
+- **Gen 2 trainers with Z-Power:** all sixteen Gym Leaders, the Elite Four,
+  Champion Lance, RED, and the rival from the Goldenrod Underground on.
+- **Gen 2 status Z-Moves** with the split special stats, and the Sun/Moon
+  bonus for every new Gen 2 status move (Belly Drum, Spikes, Sketch,
+  Foresight...).
+- **Gen 2 Z-Move power** for Gen 2's variable-power moves (Return, Magnitude,
+  Hidden Power, Flail, Present...).
+- **Gen 2 animations:** each Z-Move chains the game's own animation scripts
+  (Focus Energy's charge-up, two signature moves, Explosion's shake and
+  flash).
+- **Gen 2 preview bar and markers** placed for the Gen 2 battle screen, in
+  the classic and the widescreen layout.
+- **Z-RING in Gen 2's KEY ITEMS pocket**, with the item jingle; PARTY there
+  also gives and takes crystals.
+- A Gen 2 test suite that fights on the engine's own Gen 2 battle.
+
+### Unchanged
+- Gen 1: every rule, crystal, screen and save behaves as in 0.7.0.
+- Z-Crystals stay separate from held items in both generations.
+
 ## [0.7.0]
 
 A Gen 1 completeness and stability release.
